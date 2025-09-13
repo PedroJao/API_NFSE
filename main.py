@@ -18,6 +18,7 @@ import cv2
 import fitz  # PyMuPDF
 import numpy as np
 import pytesseract
+import requests
 
 # ------------------- CONFIGURAÇÃO -------------------
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -70,6 +71,18 @@ class TaskResponse(BaseModel):
     arquivo_pdf: Optional[str] = None
     erro_mensagem: Optional[str] = None
 
+# ------------------- VALIDAÇÃO -------------------
+def validate_pdf_file(file: UploadFile) -> None:
+    """Valida se o arquivo é um PDF válido."""
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="O arquivo deve ter extensão .pdf")
+    if file.content_type != 'application/pdf':
+        raise HTTPException(status_code=400, detail="O tipo de conteúdo deve ser application/pdf")
+    # Opcional: Validar tamanho do arquivo (exemplo: máximo 10MB)
+    max_size = 10 * 1024 * 1024  # 10MB em bytes
+    if file.size > max_size:
+        raise HTTPException(status_code=400, detail="O arquivo excede o tamanho máximo de 10MB")
+
 # ------------------- EXTRACTOR -------------------
 class NFSeExtractor(ABC):
     @abstractmethod
@@ -80,19 +93,19 @@ class FortalezaNFSeExtractor(NFSeExtractor):
     def __init__(self):
         self.template_path = 'brasao_fortaleza.png'
         self.fixed_crops = [
-            [306, 372, 541, 936],    # data_emissao
-            [83, 303, 1985, 2395],   # numero_nfse
-            [511, 574, 825, 2396],   # prestador_nome
-            [643, 702, 695, 1110],   # prestador_cnpj
-            [699, 758, 775, 2396],   # prestador_endereco
-            [904, 946, 517, 2392],   # tomador_nome
-            [970, 1012, 328, 713],   # tomador_cnpj
-            [1029, 1071, 411, 2392], # tomador_endereço
-            [1224, 1857, 88, 2392],  # servicos_descrição
-            [2445, 2500, 584, 909],  # valor_servicos
-            [2925, 3029, 2027, 2381],# valor_iss
-            [2932, 3022, 584, 907],  # valor_liquido
-            [2514, 2584, 2019, 2393] # valor_deducoes
+            [311, 365, 546, 934],    # data_emissao
+            [87, 299, 1987, 2390],    # numero_nfse
+            [515, 565, 831, 2391],    # prestador_nome
+            [644, 693, 699, 1106],    # prestador_cnpj
+            [706, 752, 781, 2391],    # prestador_endereco
+            [901, 951, 512, 2391],    # tomador_nome
+            [963, 1017, 324, 713],    # tomador_cnpj
+            [1022, 1076, 404, 2391],    # tomador_endereco
+            [1221, 1860, 87, 2391],    # servicos_descricao
+            [2438, 2508, 583, 913],    # valor_servicos
+            [2836, 2899, 585, 915],    # valor_iss
+            [2911, 3044, 583, 915],    # valor_liquido
+            [2512, 2579, 2021, 2391],    # valor_deducoes
         ]
 
     def pdf_to_image(self, pdf_path: str, page_num: int = 0) -> np.ndarray:
@@ -128,7 +141,8 @@ class FortalezaNFSeExtractor(NFSeExtractor):
         best_val = -np.inf
         scales = np.linspace(0.5, 1.5, 20)
         for scale in scales:
-            resized_template = cv2.resize(template, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+            resized_template = cv2.resize(
+                template, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
             if resized_template.shape[0] >= img.shape[0] or resized_template.shape[1] >= img.shape[1]:
                 continue
             res = np.mean([cv2.matchTemplate(cv2.split(img)[i], cv2.split(resized_template)[i], cv2.TM_CCOEFF_NORMED) for i in range(3)], axis=0)
@@ -145,7 +159,7 @@ class FortalezaNFSeExtractor(NFSeExtractor):
             "numero_nfse": None,
             "prestador": {"nome": None, "cnpj": None, "endereco": None},
             "tomador": {"nome": None, "cpf_cnpj": None, "endereco": None},
-            "servicos": [{"descricao": None, "quantidade": 1, "valor_unitario": None, "valor_total": None}],
+            "servicos": [{"descricao": None, "quantidade": 1, "valor_unitario": 0.0, "valor_total": 0.0}],
             "valores": {"valor_servicos": 0.0, "valor_deducoes": 0.0, "valor_iss": 0.0, "valor_liquido": 0.0}
         }
 
@@ -200,6 +214,7 @@ extractor = FortalezaNFSeExtractor()
 
 # ------------------- HELPERS -------------------
 def safe_save_upload(upload: UploadFile, dest_folder: str) -> str:
+    """Salva o arquivo com um nome único."""
     filename = os.path.basename(upload.filename)
     unique = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}_{filename}"
     file_path = os.path.join(dest_folder, unique)
@@ -209,6 +224,7 @@ def safe_save_upload(upload: UploadFile, dest_folder: str) -> str:
 
 # ------------------- WEBHOOK NOTIFY -------------------
 def notify_webhooks(action: str, task_id: int):
+    """Notifica webhooks registrados para uma ação específica."""
     db = Session()
     try:
         webhooks = db.query(Webhook).filter(Webhook.actions.contains(action)).all()
@@ -222,6 +238,7 @@ def notify_webhooks(action: str, task_id: int):
 
 # ------------------- BACKGROUND PROCESS -------------------
 def process_nfse(task_id: int):
+    """Processa a extração de dados do PDF em segundo plano."""
     db = Session()
     task = None
     try:
@@ -262,9 +279,15 @@ def upload_info():
     return {"message": "Use POST /upload-nfse com multipart/form-data: file=@arquivo.pdf"}
 
 @app.post("/upload-nfse")
-def upload_nfse(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def upload_nfse(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """Endpoint para upload de arquivos PDF de NFSe."""
+    # Validar arquivo antes de qualquer operação
+    validate_pdf_file(file)
+
     db = Session()
+    file_path = None
     try:
+        # Salvar arquivo após validação
         file_path = safe_save_upload(file, TEMP_DIR)
         task = Task(status="pendente", arquivo_pdf=file_path, data_criacao=datetime.utcnow())
         db.add(task)
@@ -274,12 +297,16 @@ def upload_nfse(background_tasks: BackgroundTasks, file: UploadFile = File(...))
         notify_webhooks("upload", task.id)
         return {"task_id": task.id}
     except Exception as e:
+        # Remover arquivo em caso de erro
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
         return JSONResponse(status_code=500, content={"error": str(e), "trace": traceback.format_exc()})
     finally:
         db.close()
 
 @app.get("/status/{task_id}")
 def get_status(task_id: int = Path(...)):
+    """Retorna o status de uma tarefa."""
     db = Session()
     try:
         task = db.query(Task).filter(Task.id == task_id).first()
@@ -291,6 +318,7 @@ def get_status(task_id: int = Path(...)):
 
 @app.get("/result/{task_id}")
 def get_result(task_id: int = Path(...)):
+    """Retorna o resultado da extração de uma tarefa."""
     db = Session()
     try:
         task = db.query(Task).filter(Task.id == task_id).first()
@@ -304,6 +332,7 @@ def get_result(task_id: int = Path(...)):
 
 @app.post("/webhook", response_model=WebhookResponse)
 def create_webhook(webhook: WebhookCreate):
+    """Cria um novo webhook."""
     db = Session()
     try:
         db_webhook = Webhook(url=webhook.url, actions=webhook.actions)
@@ -316,6 +345,7 @@ def create_webhook(webhook: WebhookCreate):
 
 @app.get("/webhook", response_model=List[WebhookResponse])
 def list_webhooks():
+    """Lista todos os webhooks registrados."""
     db = Session()
     try:
         webhooks = db.query(Webhook).all()
@@ -325,18 +355,22 @@ def list_webhooks():
 
 @app.get("/admin/tasks", response_model=List[TaskResponse])
 def admin_list_tasks(limit: int = Query(100, gt=0, le=1000), status: Optional[str] = Query(None)):
+    """Lista tarefas com filtro opcional por status."""
     db = Session()
     try:
         q = db.query(Task).order_by(Task.id.desc())
         if status:
             q = q.filter(Task.status == status)
         tasks = q.limit(limit).all()
-        return [TaskResponse(id=t.id, status=t.status, data_criacao=t.data_criacao, data_conclusao=t.data_conclusao, arquivo_pdf=t.arquivo_pdf, erro_mensagem=t.erro_mensagem) for t in tasks]
+        return [TaskResponse(id=t.id, status=t.status, data_criacao=t.data_criacao, 
+                           data_conclusao=t.data_conclusao, arquivo_pdf=t.arquivo_pdf, 
+                           erro_mensagem=t.erro_mensagem) for t in tasks]
     finally:
         db.close()
 
 @app.get("/admin/webhooks", response_model=List[WebhookResponse])
 def admin_list_webhooks(limit: int = Query(100, gt=0, le=1000)):
+    """Lista webhooks administrativos."""
     db = Session()
     try:
         webhooks = db.query(Webhook).order_by(Webhook.id.desc()).limit(limit).all()

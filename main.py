@@ -311,7 +311,7 @@ def get_status(task_id: int = Path(...)):
     try:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(status_code=404, detail="Tarefa não encontrada")
         return {"task_id": task.id, "status": task.status, "data_criacao": task.data_criacao, "data_conclusao": task.data_conclusao}
     finally:
         db.close()
@@ -323,10 +323,10 @@ def get_result(task_id: int = Path(...)):
     try:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(status_code=404, detail="Tarefa não encontrada")
         if task.json_resultado:
             return json.loads(task.json_resultado)
-        raise HTTPException(status_code=400, detail="No result available yet")
+        raise HTTPException(status_code=400, detail="Nenhum resultado disponível ainda")
     finally:
         db.close()
 

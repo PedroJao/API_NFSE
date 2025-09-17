@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    container_name: nfse_app
+    restart: always
+    volumes:
+      - .:/app
+      - ./temp:/app/temp  # Montar temp como volume separado
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: "postgresql://user:123456@db:5432/nfse_db?client_encoding=utf8"
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15
+    container_name: nfse_db
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: 123456
+      POSTGRES_DB: nfse_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

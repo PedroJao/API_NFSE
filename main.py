@@ -21,8 +21,8 @@ import pytesseract
 import requests
 
 # ------------------- CONFIGURAÇÃO -------------------
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-DATABASE_URL = "postgresql://user:123456@localhost/nfse_db?client_encoding=utf8"
+pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"  # Caminho do Tesseract no container
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:123456@localhost/nfse_db?client_encoding=utf8")
 
 BASE_DIR = os.getcwd()
 TEMP_DIR = os.path.join(BASE_DIR, "temp")
@@ -93,19 +93,19 @@ class FortalezaNFSeExtractor(NFSeExtractor):
     def __init__(self):
         self.template_path = 'brasao_fortaleza.png'
         self.fixed_crops = [
-            [311, 365, 546, 934],    # data_emissao
-            [87, 299, 1987, 2390],    # numero_nfse
-            [515, 565, 831, 2391],    # prestador_nome
-            [644, 693, 699, 1106],    # prestador_cnpj
-            [706, 752, 781, 2391],    # prestador_endereco
-            [901, 951, 512, 2391],    # tomador_nome
-            [963, 1017, 324, 713],    # tomador_cnpj
-            [1022, 1076, 404, 2391],    # tomador_endereco
-            [1221, 1860, 87, 2391],    # servicos_descricao
-            [2438, 2508, 583, 913],    # valor_servicos
-            [2836, 2899, 585, 915],    # valor_iss
-            [2911, 3044, 583, 915],    # valor_liquido
-            [2512, 2579, 2021, 2391],    # valor_deducoes
+            [314, 372, 547, 932],    # data_emissao
+            [88, 296, 1988, 2393],    # numero_nfse
+            [522, 571, 828, 2391],    # prestador_nome
+            [650, 690, 701, 1106],    # prestador_cnpj
+            [712, 743, 778, 2390],    # prestador_endereco
+            [898, 947, 513, 2388],    # tomador_nome
+            [965, 1004, 325, 712],    # tomador_cnpj
+            [1027, 1075, 405, 2388],    # tomador_endereco
+            [1217, 1850, 89, 2390],    # servicos_descricao
+            [2443, 2500, 586, 912],    # valor_servicos
+            [2832, 2903, 583, 914],    # valor_iss
+            [2920, 3031, 588, 912],    # valor_liquido
+            [2509, 2580, 2020, 2393],    # valor_deducoes
         ]
 
     def pdf_to_image(self, pdf_path: str, page_num: int = 0) -> np.ndarray:
@@ -122,13 +122,19 @@ class FortalezaNFSeExtractor(NFSeExtractor):
             return ""
         crop = img[y_start:y_end, x_start:x_end]
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        kernel = np.ones((1, 1), np.uint8)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-        config = "--oem 3 --psm 6"
+        # Remover limiarização para teste
+        # _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # kernel = np.ones((1, 1), np.uint8)
+        # thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        thresh = gray  # Usar imagem em escala de cinza diretamente
+        # cv2.imwrite(f"debug_crop_{uuid.uuid4().hex[:6]}.png", thresh)  # Para depuração
+        config = "--oem 3 --psm 11"
         try:
-            return pytesseract.image_to_string(thresh, lang="por", config=config).strip()
-        except pytesseract.TesseractError:
+            text = pytesseract.image_to_string(thresh, lang="por", config=config).strip()
+            print(f"Texto extraído: {text}")
+            return text
+        except pytesseract.TesseractError as e:
+            print(f"Erro no Tesseract: {e}")
             return ""
 
     def detect_brasao(self, img: np.ndarray) -> bool:
@@ -147,11 +153,10 @@ class FortalezaNFSeExtractor(NFSeExtractor):
                 continue
             res = np.mean([cv2.matchTemplate(cv2.split(img)[i], cv2.split(resized_template)[i], cv2.TM_CCOEFF_NORMED) for i in range(3)], axis=0)
             _, max_val, _, _ = cv2.minMaxLoc(res)
+            print(f"Escala: {scale}, Valor máximo: {max_val}")  # Log para depuração
             if max_val > best_val:
                 best_val = max_val
-            if max_val >= 0.6:
-                return True
-        return best_val >= 0.6
+        return best_val >= 0.5  # Reduzir o limiar para teste
 
     def parse_fortaleza(self, img: np.ndarray) -> dict:
         dados = {
@@ -170,28 +175,37 @@ class FortalezaNFSeExtractor(NFSeExtractor):
         ]
 
         textos = {field: self.extract_text_from_crop(img, *crop) for field, crop in zip(field_map, self.fixed_crops)}
+        print("Textos extraídos:", textos)  # Log para depuração
 
         # Processamento com validação
         data_match = re.search(r"(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2})", textos["data_emissao"])
         if data_match:
             dados["data_emissao"] = datetime.strptime(data_match.group(1), "%d/%m/%Y %H:%M:%S").isoformat()
+        else:
+            print(f"Falha ao parsear data_emissao: {textos['data_emissao']}")
 
         numero_match = re.search(r"(\d+)", textos["numero_nfse"])
         if numero_match:
             dados["numero_nfse"] = numero_match.group(1)
+        else:
+            print(f"Falha ao parsear numero_nfse: {textos['numero_nfse']}")
 
         dados["prestador"]["nome"] = textos["prestador_nome"].strip() or None
         cnpj_match = re.search(r"(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})", textos["prestador_cnpj"])
         if cnpj_match:
             dados["prestador"]["cnpj"] = cnpj_match.group(1)
-        dados["prestador"]["endereco"] = textos["prestador_endereco"].strip() or None
+        else:
+            print(f"Falha ao parsear prestador_cnpj: {textos['prestador_cnpj']}")
 
+        dados["prestador"]["endereco"] = textos["prestador_endereco"].strip() or None
         dados["tomador"]["nome"] = textos["tomador_nome"].strip() or None
         cnpj_match = re.search(r"(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})", textos["tomador_cnpj"])
         if cnpj_match:
             dados["tomador"]["cpf_cnpj"] = cnpj_match.group(1)
-        dados["tomador"]["endereco"] = textos["tomador_endereco"].strip() or None
+        else:
+            print(f"Falha ao parsear tomador_cnpj: {textos['tomador_cnpj']}")
 
+        dados["tomador"]["endereco"] = textos["tomador_endereco"].strip() or None
         dados["servicos"][0]["descricao"] = textos["servicos_descricao"].strip() or None
 
         for field in ["valor_servicos", "valor_iss", "valor_liquido", "valor_deducoes"]:
@@ -199,13 +213,16 @@ class FortalezaNFSeExtractor(NFSeExtractor):
             if match and match.group(1).replace('.', '').replace(',', '').isdigit():
                 dados["valores"][field] = float(match.group(1).replace('.', '').replace(',', '.'))
             else:
+                print(f"Falha ao parsear {field}: {textos[field]}")
                 dados["valores"][field] = 0.0
 
         return dados
 
     def extract(self, file_path: str) -> dict:
         img = self.pdf_to_image(file_path)
-        if self.detect_brasao(img):
+        brasao_detected = self.detect_brasao(img)
+        print(f"Brasão detectado: {brasao_detected}")  # Log para depuração
+        if brasao_detected:
             return self.parse_fortaleza(img)
         return {"error": "Brasão não detectado. Pode não ser uma NFS-e de Fortaleza."}
 
